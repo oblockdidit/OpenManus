@@ -1,0 +1,26 @@
+# Twenty CRM API Integration Configuration
+
+[api]
+url = "http://localhost:3000/"
+key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOTViNTEyNS0xY2Y0LTRjODUtYTUzYi05YmVlODdlZDVmNjIiLCJ0eXBlIjoiQVBJX0tFWSIsIndvcmtzcGFjZUlkIjoiYjk1YjUxMjUtMWNmNC00Yzg1LWE1M2ItOWJlZTg3ZWQ1ZjYyIiwiaWF0IjoxNzQzMzAyNDAzLCJleHAiOjQ4OTY5MDI0MDIsImp0aSI6IjliODIwNDY2LTRiNzAtNGYzYS05YjViLWIyZGNlMjk5ZTRjZCJ9.7B6lEME5e1TG8jkKcYYIzR14HrIxjI8sRzNeSphGdIc"
+
+[query_defaults]
+# Default limit for database queries
+default_limit = 50
+# Default ordering for company queries
+default_ordering = "createdAt:DESC"
+# Number of retry attempts for API calls
+retry_attempts = 3
+# Delay between retries (seconds)
+retry_delay = 1
+
+[metadata]
+# Custom field mappings
+website_status_options = [
+  "Unknown",
+  "No Website", 
+  "Basic Website", 
+  "Modern Website",
+  "Premium Website"
+]
+priority_options = ["Low", "Medium", "High"]

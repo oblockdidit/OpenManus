@@ -9,7 +9,6 @@ from app.prompt.browser import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.schema import Message, ToolChoice
 from app.tool import BrowserUseTool, Terminate, ToolCollection
 
-
 # Avoid circular import if BrowserAgent needs BrowserContextHelper
 if TYPE_CHECKING:
     from app.agent.base import BaseAgent  # Or wherever memory is defined
@@ -105,12 +104,39 @@ class BrowserAgent(ToolCallAgent):
     tool_choices: ToolChoice = ToolChoice.AUTO
     special_tool_names: list[str] = Field(default_factory=lambda: [Terminate().name])
 
-    browser_context_helper: Optional[BrowserContextHelper] = None
+    _current_base64_image: Optional[str] = None
 
-    @model_validator(mode="after")
-    def initialize_helper(self) -> "BrowserAgent":
-        self.browser_context_helper = BrowserContextHelper(self)
-        return self
+    async def _handle_special_tool(self, name: str, result: Any, **kwargs):
+        if not self._is_special_tool(name):
+            return
+        else:
+            await self.available_tools.get_tool(BrowserUseTool().name).cleanup()
+            await super()._handle_special_tool(name, result, **kwargs)
+
+    async def get_browser_state(self) -> Optional[dict]:
+        """Get the current browser state for context in next steps."""
+        browser_tool = self.available_tools.get_tool(BrowserUseTool().name)
+        if not browser_tool:
+            return None
+
+        try:
+            # Get browser state directly from the tool
+            result = await browser_tool.get_current_state()
+
+            if result.error:
+                logger.debug(f"Browser state error: {result.error}")
+                return None
+
+            # Store screenshot if available
+            if hasattr(result, "base64_image") and result.base64_image:
+                self._current_base64_image = result.base64_image
+
+            # Parse the state info
+            return json.loads(result.output)
+
+        except Exception as e:
+            logger.debug(f"Failed to get browser state: {str(e)}")
+            return None
 
     async def think(self) -> bool:
         """Process current state and decide next actions using tools, with browser state info added"""

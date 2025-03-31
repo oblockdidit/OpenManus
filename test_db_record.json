@@ -1,0 +1,17 @@
+{
+  "_id": "test123456789",
+  "name": "Acme Web Solutions",
+  "website": "example.com",
+  "industry": "E-commerce",
+  "address": "123 Main Street, San Francisco, CA 94105",
+  "phoneNumber": "415-555-1234",
+  "contactName": "John Smith",
+  "contactEmail": "john@acmewebsolutions.com",
+  "contactPhone": "415-555-2345",
+  "employeeCount": 25,
+  "annualRevenue": "$2.5M",
+  "notes": "Currently using a WordPress site that looks outdated. Expressed interest in redesign during initial contact.",
+  "leadSource": "Trade Show",
+  "created": "2025-03-15T14:30:00Z",
+  "lastContact": "2025-03-25T10:15:00Z"
+}
