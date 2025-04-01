@@ -8,6 +8,9 @@ from app.prompt.mcp import MULTIMEDIA_RESPONSE_PROMPT, NEXT_STEP_PROMPT, SYSTEM_
 from app.schema import AgentState, Message
 from app.tool.base import ToolResult
 from app.tool.mcp import MCPClients
+from app.parser.tool_parser import ToolCall, parse_assistant_message
+from app.llm_integration import LLMIntegration
+from app.exceptions import ToolUnavailableError, ToolExecutionError, ParsingError
 
 
 class MCPAgent(ToolCallAgent):
@@ -36,6 +39,14 @@ class MCPAgent(ToolCallAgent):
 
     # Special tool names that should trigger termination
     special_tool_names: List[str] = Field(default_factory=lambda: ["terminate"])
+    
+    # Metrics tracking
+    execution_history: List[Dict[str, Any]] = Field(default_factory=list)
+    metrics: Dict[str, int] = Field(default_factory=lambda: {
+        "total_executions": 0,
+        "successful_executions": 0,
+        "failed_executions": 0,
+    })
 
     async def initialize(
         self,
@@ -148,8 +159,97 @@ class MCPAgent(ToolCallAgent):
                 self.state = AgentState.FINISHED
                 return False
 
-        # Use the parent class's think method
-        return await super().think()
+        # Create an LLM integration instance
+        llm_integration = LLMIntegration()
+
+        try:
+            # Get the latest messages for context
+            all_messages = self.memory.messages
+            
+            # Format system prompt with available tools
+            tool_names = list(self.mcp_clients.tool_map.keys())
+            tools_info = ", ".join(tool_names)
+            system_message = Message.system_message(
+                f"{self.system_prompt}\n\nAvailable MCP tools: {tools_info}"
+            )
+            
+            # Ask LLM with tools
+            response = await llm_integration.ask_with_tools(
+                messages=all_messages[1:],  # Skip system message as we're providing it separately
+                system_msgs=[system_message.to_dict()],
+                tools=None,  # We're using XML-based tool calls
+                stream=False
+            )
+            
+            # Extract text content and tool calls
+            text_content = response.get("text", "")
+            tool_calls = response.get("tool_calls", [])
+            
+            # Add a custom fallback message if we have neither text nor tool calls
+            if not text_content.strip() and not tool_calls:
+                text_content = ("I noticed you said 'hello'. I'm your AI assistant and can help with various tasks. "
+                             "Would you like to see what tools I have available? Just let me know what you'd like help with.")
+                logger.info(f"Using custom fallback response text: {text_content[:50]}...")
+            
+            # Add the text content to our memory if present
+            if text_content.strip():
+                self.memory.add_message(Message.assistant_message(text_content))
+            
+            # Check if we need to execute a tool
+            if tool_calls:
+                # Get the first complete tool call
+                tool_call = tool_calls[0]  # We only process one tool at a time
+                
+                # Check if the tool is available
+                if tool_call.name not in self.mcp_clients.tool_map:
+                    logger.warning(f"Tool '{tool_call.name}' not found in available tools")
+                    self.memory.add_message(
+                        Message.system_message(f"Tool '{tool_call.name}' is not available.")
+                    )
+                    return False
+                
+                # Log the tool call
+                logger.info(f"✨ {self.name}'s thoughts: ")
+                logger.info(f"🛠️ {self.name} selected tool '{tool_call.name}' to use")
+                
+                # Execute the tool
+                tool = self.mcp_clients.tool_map[tool_call.name]
+                result = await tool.execute(**tool_call.parameters)
+                
+                # Update execution history
+                self.update_execution_info(tool_call.name, result)
+                
+                # Add the result to memory
+                tool_message = Message.tool_message(
+                    name=tool_call.name,
+                    content=result.output or result.error or "No result",
+                    tool_call_id=self.generate_tool_call_id(tool_call.name),
+                    base64_image=result.base64_image
+                )
+                self.memory.add_message(tool_message)
+                
+                # Handle multimedia results
+                if result.base64_image:
+                    self.memory.add_message(
+                        Message.system_message(
+                            MULTIMEDIA_RESPONSE_PROMPT.format(tool_name=tool_call.name)
+                        )
+                    )
+                
+                return True  # Continue execution
+            
+            return False  # No tool execution needed
+            
+        except Exception as e:
+            logger.error(f"Error in think method: {e}")
+            self.memory.add_message(
+                Message.system_message(f"Error: {str(e)}")
+            )
+            return False
+
+    def generate_tool_call_id(self, tool_name: str) -> str:
+        """Generate a unique ID for tool calls"""
+        return f"{tool_name}_{len(self.execution_history)}"
 
     async def _handle_special_tool(self, name: str, result: Any, **kwargs) -> None:
         """Handle special tool execution and state changes"""
@@ -163,11 +263,45 @@ class MCPAgent(ToolCallAgent):
                     MULTIMEDIA_RESPONSE_PROMPT.format(tool_name=name)
                 )
             )
+            
+        # If the tool is a terminate tool, set state to FINISHED
+        if name.lower() == "terminate":
+            logger.info("Terminate tool called, ending interaction")
+            self.state = AgentState.FINISHED
 
     def _should_finish_execution(self, name: str, **kwargs) -> bool:
         """Determine if tool execution should finish the agent"""
         # Terminate if the tool name is 'terminate'
         return name.lower() == "terminate"
+        
+    def update_execution_info(self, tool_name: str, result: ToolResult) -> None:
+        """Update execution info after a tool is executed."""
+        # Track execution information for reporting
+        execution_info = {
+            "tool": tool_name,
+            "success": not bool(result.error),
+            "error": result.error,
+            "output": result.output,
+            "has_image": bool(result.base64_image)
+        }
+        
+        # Store the execution information
+        self.execution_history.append(execution_info)
+        
+        # Log execution details
+        if result.error:
+            logger.error(f"Tool '{tool_name}' execution failed: {result.error}")
+        else:
+            logger.info(f"Tool '{tool_name}' executed successfully")
+            if result.base64_image:
+                logger.info(f"Tool '{tool_name}' returned an image")
+        
+        # Update metrics
+        self.metrics["total_executions"] += 1
+        if result.error:
+            self.metrics["failed_executions"] += 1
+        else:
+            self.metrics["successful_executions"] += 1
 
     async def cleanup(self) -> None:
         """Clean up MCP connection when done."""

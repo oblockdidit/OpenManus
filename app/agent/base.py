@@ -162,6 +162,12 @@ class BaseAgent(BaseModel, ABC):
 
     def handle_stuck_state(self):
         """Handle stuck state by adding a prompt to change strategy"""
+        # First reset any previous prompt additions
+        if hasattr(self, 'next_step_prompt') and self.next_step_prompt:
+            original_prompt = getattr(self.__class__, 'next_step_prompt', "")
+            self.next_step_prompt = original_prompt
+        
+        # Now add the stuck state prompt
         stuck_prompt = "\
         Observed duplicate responses. Consider new strategies and avoid repeating ineffective paths already attempted."
         self.next_step_prompt = f"{stuck_prompt}\n{self.next_step_prompt}"

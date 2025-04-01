@@ -22,9 +22,14 @@ class ReActAgent(BaseAgent, ABC):
     max_steps: int = 10
     current_step: int = 0
 
-    @abstractmethod
     async def think(self) -> bool:
-        """Process current state and decide next action"""
+        """Process current state and decide next action.
+        
+        This is a default implementation that always returns True.
+        Subclasses should override this method with their specific logic.
+        """
+        # Default implementation always takes action
+        return True
 
     @abstractmethod
     async def act(self) -> str:

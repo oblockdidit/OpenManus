@@ -1,0 +1,49 @@
+# OpenRouter Configuration
+
+# API Key for OpenRouter access
+# You can get an API key from https://openrouter.ai/keys
+api_key = "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"
+
+# Default model to use (you can use the short name)
+# Available models include:
+#   - claude-3-opus
+#   - claude-3-sonnet
+#   - claude-3-haiku
+#   - claude-3-5-sonnet
+#   - claude-3-7-sonnet
+#   - deepseek-chat
+#   - deepseek-coder
+#   - deepseek-r1
+#   - mistral-large
+#   - llama-3-70b
+#   - llama-3-8b
+#   - gpt-4o
+#   - gpt-4-turbo
+#   - qwen-32b
+default_model = "deepseek-chat"
+
+# Provider sorting strategy
+# Options: "pricing", "latency", "availability"
+provider_sorting = "pricing"
+
+# Rate limiting settings
+[rate_limiting]
+initial_rate = 10    # Initial rate limit (requests per minute)
+backoff_factor = 0.5 # Factor to reduce rate by when errors occur
+max_retries = 5      # Maximum number of retries for a single request
+
+# Fallback settings
+[fallbacks]
+enabled = true # Whether to use fallback models when primary fails
+
+# Model-specific overrides
+# These override the default settings in openrouter_config.py
+[model_settings.deepseek-chat]
+temperature = 0.7
+top_p = 0.95
+max_tokens = 2048
+
+[model_settings.deepseek-coder]
+temperature = 0.5
+top_p = 0.95
+max_tokens = 2048
