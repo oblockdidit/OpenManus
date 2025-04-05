@@ -63,3 +63,15 @@ MULTIMEDIA_RESPONSE_PROMPT = """You've received a multimedia response (image, au
 This content has been processed and described for you.
 Use this information to continue the task or provide insights to the user.
 """
+
+BROWSER_SCREENSHOT_PROMPT = """I'm showing you a webpage screenshot with interactive elements. 
+
+Key information:
+1. Blue markers with numbers [0], [1], [2], etc. identify clickable elements
+2. You can refer to these elements by number when describing them
+3. To click on an element, you can either:
+   - Use the browser_use tool: <browser_use><action>click_element</action><index>3</index></browser_use>
+   - Or simply write: "I'll click on element [3]" and I'll understand that as a click command
+
+Please analyze the visual layout, content, and interactive elements.
+"""

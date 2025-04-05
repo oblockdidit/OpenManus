@@ -79,6 +79,34 @@ MODEL_CAPABILITIES = {
 
 # Model-specific settings
 MODEL_SETTINGS = {
+    # Claude models
+    "anthropic/claude-3-opus": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 4096
+    },
+    "anthropic/claude-3-sonnet": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 4096
+    },
+    "anthropic/claude-3-haiku": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 4096
+    },
+    "anthropic/claude-3.5-sonnet": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 4096
+    },
+    "anthropic/claude-3.7-sonnet": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 4096
+    },
+    
+    # DeepSeek models
     "deepseek/deepseek-chat": {
         "temperature": 0.7,
         "top_p": 0.95,
@@ -99,6 +127,8 @@ MODEL_SETTINGS = {
         "top_p": 0.95,
         "max_tokens": 2048
     },
+    
+    # Other models
     "meta-llama/llama-3-70b-instruct": {
         "temperature": 0.7,
         "top_p": 0.9,
@@ -118,20 +148,44 @@ MODEL_SETTINGS = {
         "temperature": 0.7,
         "top_p": 0.9,
         "max_tokens": 4096
+    },
+    
+    # OpenAI models
+    "openai/gpt-4o": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 4096
+    },
+    "openai/gpt-4-turbo": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 4096
     }
 }
 
 # Fallback model configuration
 # If a model fails, use these models as fallbacks in order
 FALLBACK_MODELS = {
+    # Claude models first fallback to other Claude models
+    "anthropic/claude-3-opus": ["anthropic/claude-3-sonnet", "anthropic/claude-3-haiku"],
+    "anthropic/claude-3-sonnet": ["anthropic/claude-3-haiku", "meta-llama/llama-3-70b-instruct"],
+    "anthropic/claude-3-haiku": ["meta-llama/llama-3-70b-instruct", "meta-llama/llama-3-8b-instruct"],
+    "anthropic/claude-3.5-sonnet": ["anthropic/claude-3-haiku", "meta-llama/llama-3-70b-instruct"],
+    "anthropic/claude-3.7-sonnet": ["anthropic/claude-3.5-sonnet", "anthropic/claude-3-haiku"],
+    
+    # DeepSeek models fallback to Claude and Llama
     "deepseek/deepseek-chat": ["anthropic/claude-3-haiku", "meta-llama/llama-3-8b-instruct"],
     "deepseek/deepseek-chat-v3-0324": ["anthropic/claude-3-haiku", "meta-llama/llama-3-8b-instruct"],
     "deepseek/deepseek-coder": ["anthropic/claude-3-haiku", "meta-llama/llama-3-8b-instruct"],
     "deepseek/deepseek-r1": ["anthropic/claude-3-haiku", "deepseek/deepseek-chat"],
+    
+    # Other models
     "qwen/qwen2.5-32b-instruct": ["meta-llama/llama-3-8b-instruct", "anthropic/claude-3-haiku"],
     "qwen/qwen2.5-vl-32b-instruct": ["qwen/qwen2.5-32b-instruct", "anthropic/claude-3-haiku"],
     "meta-llama/llama-3-70b-instruct": ["meta-llama/llama-3-8b-instruct", "anthropic/claude-3-haiku"],
-    "default": ["anthropic/claude-3-haiku"]  # Default fallback for any model not specified
+    
+    # Default fallbacks for any model not specifically listed
+    "default": ["anthropic/claude-3-haiku", "meta-llama/llama-3-8b-instruct", "deepseek/deepseek-chat"]
 }
 
 # System prompt enhancements for specific models

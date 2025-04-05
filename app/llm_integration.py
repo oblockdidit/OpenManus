@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Union
 from app.llm import LLM
 from app.parser.tool_parser import parse_assistant_message, ToolCall
 from app.logger import logger
-from app.llm.openrouter_provider import generate_openrouter_response
+from app.llm.openrouter_provider import generate_openrouter_response, generate_openrouter_quick_response
 from app.schema import Message
 
 
@@ -33,10 +33,10 @@ class LLMIntegration:
                 name in model_id for name in ["gpt-4", "gpt-3.5", "claude-3"]
             ),
             "supports_images": any(
-                name in model_id for name in ["gpt-4-vision", "gpt-4o", "gpt-4o-mini", "claude-3"]
+                name in model_id for name in ["gpt-4-vision", "gpt-4o", "gpt-4o-mini", "claude-3", "gemini", "deepseek"]
             ),
             "high_context": any(
-                name in model_id for name in ["gpt-4-32k", "gpt-4o", "claude-3-opus", "claude-3-sonnet"]
+                name in model_id for name in ["gpt-4-32k", "gpt-4o", "claude-3-opus", "claude-3-sonnet", "gemini-2-5"]
             ),
         }
 
@@ -116,21 +116,43 @@ class LLMIntegration:
             # Special handling for OpenRouter
             if self.is_openrouter:
                 model_id = self.active_model
-                response_stream = await generate_openrouter_response(
-                    messages=prepared_messages,
-                    model_id=model_id,
-                    temperature=temperature or self.llm.temperature,
-                    max_tokens=self.llm.max_tokens,
-                    stream=stream
-                )
+                try:
+                    # Use the quick function that has built-in timeout handling
+                    response_stream = await generate_openrouter_quick_response(
+                        messages=prepared_messages,
+                        model_id=model_id,
+                        temperature=temperature or self.llm.temperature,
+                        max_tokens=self.llm.max_tokens,
+                        stream=stream
+                    )
+                except Exception as e:
+                    logger.error(f"Error with quick OpenRouter response: {e}")
+                    # Fall back to the regular function
+                    response_stream = await generate_openrouter_response(
+                        messages=prepared_messages,
+                        model_id=model_id,
+                        temperature=temperature or self.llm.temperature,
+                        max_tokens=self.llm.max_tokens,
+                        stream=stream
+                    )
                 
                 # Handle streaming or non-streaming response
                 if stream:
+                    # Streaming expected to return an async iterator
                     collected_chunks = []
-                    async for chunk in response_stream:
-                        content = chunk.choices[0].delta.content
-                        if content:
-                            collected_chunks.append(content)
+                    try:
+                        async for chunk in response_stream:
+                            content = chunk.choices[0].delta.content
+                            if content:
+                                collected_chunks.append(content)
+                    except (TypeError, AttributeError) as e:
+                        # Handle non-streaming response that was sent with stream=True
+                        logger.warning(f"Response doesn't support async iteration: {e}. Falling back to non-streaming handling.")
+                        if hasattr(response_stream, 'choices') and response_stream.choices:
+                            # Handle as a regular completion
+                            content = response_stream.choices[0].message.content
+                            if content:
+                                collected_chunks.append(content)
                     
                     # Parse tool calls from the full response
                     full_text = "".join(collected_chunks)
@@ -144,10 +166,22 @@ class LLMIntegration:
                 else:
                     # Non-streaming response
                     collected_chunks = []
-                    async for chunk in response_stream:
-                        content = chunk.choices[0].delta.content
+                    
+                    # Check if response_stream is already a complete response (not an async iterator)
+                    if hasattr(response_stream, 'choices') and response_stream.choices:
+                        # It's already a complete ChatCompletion object
+                        content = response_stream.choices[0].message.content
                         if content:
                             collected_chunks.append(content)
+                    else:
+                        # Try to iterate (legacy support)
+                        try:
+                            async for chunk in response_stream:
+                                content = chunk.choices[0].delta.content
+                                if content:
+                                    collected_chunks.append(content)
+                        except (TypeError, AttributeError) as e:
+                            logger.warning(f"Unexpected response format: {e}")
                     
                     full_text = "".join(collected_chunks)
                     text_content, tool_calls = parse_assistant_message(full_text)
@@ -170,10 +204,39 @@ class LLMIntegration:
                     if not response:
                         # Handle empty response with a more helpful message that suggests actions
                         logger.warning("Received empty response from LLM - providing fallback")
-                        return {
-                            "text": "I noticed you said 'hello'. I've opened example.com in the browser. Is there something specific you'd like me to help you with? I can:\n\n1. Run commands for you using the 'bash' tool\n2. Browse websites with the 'browser_use' tool\n3. Edit text with the 'str_replace_editor' tool\n\nJust let me know what you'd like to do!",
-                            "tool_calls": [],
-                        }
+                        
+                        # Check if this is a website analysis request
+                        website_analysis = False
+                        website_url = None
+                        
+                        for msg in messages:
+                            if isinstance(msg, dict) and msg.get('role') == 'user':
+                                content = msg.get('content', '')
+                                if isinstance(content, str) and ('analyze' in content.lower() or 'analyse' in content.lower()) and 'http' in content:
+                                    website_analysis = True
+                                    # Extract URL
+                                    import re
+                                    urls = re.findall(r'https?://[^\s]+', content)
+                                    if urls:
+                                        website_url = urls[0]
+                                    break
+                        
+                        if website_analysis and website_url:
+                            # Provide a website analysis specific fallback
+                            return {
+                                "text": f"I'll analyze the website at {website_url} for you. I'll examine its design, content, functionality, and performance to provide a comprehensive assessment.",
+                                "tool_calls": [ToolCall(
+                                    name="browser_use",
+                                    parameters={"action": "go_to_url", "url": website_url},
+                                    partial=False
+                                )],
+                            }
+                        else:
+                            # Generic fallback
+                            return {
+                                "text": "I'll help you with that. Let me know what specific aspects you'd like me to assist with. I can:\n\n1. Run commands for you using the 'bash' tool\n2. Browse websites with the 'browser_use' tool\n3. Edit text with the 'str_replace_editor' tool",
+                                "tool_calls": [],
+                            }
                     
                     # Since the LLM class may not support true streaming with chunks,
                     # we'll just return the full response
@@ -184,12 +247,15 @@ class LLMIntegration:
                         "tool_calls": [tool for tool in tool_calls if not tool.partial],
                     }
                 else:
-                    # Non-streaming approach
-                    response = await self.llm.ask(
+                    # Expect the response to be ready quickly
+                    response = await asyncio.wait_for(
+                    self.llm.ask(
                         messages=prepared_messages,
                         stream=False,
-                        temperature=temperature,
-                    )
+                            temperature=temperature,
+                    ),
+                    timeout=30  # Add a timeout here too for safety
+                )
                     
                     # Handle empty response
                     if not response:

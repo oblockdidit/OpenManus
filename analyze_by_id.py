@@ -1,24 +1,29 @@
 #!/usr/bin/env python
-"""Script to analyze a company directly by ID through direct website analysis."""
+"""Script to analyze a company directly by ID through direct website analysis using navbar exploration."""
 
 import asyncio
+import base64
 import json
 import os
 import signal
 import subprocess
 import sys
+import time
 from datetime import datetime
+from pathlib import Path
 
 # Add the current directory to the path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.agent.lead_prospector import LeadProspectorAgent
 from app.connectors.twenty_crm import TwentyCRMConnector
+from app.llm.llm import LLM
 from app.logger import logger
+from app.tool.browser_use_tool import BrowserUseTool
 
 
 async def analyze_company_by_id(company_id):
-    """Get a company by ID and analyze its website directly."""    
+    """Get a company by ID and analyze its website directly."""
     try:
         # Initialize the CRM connector
         api_url = os.environ.get("TWENTY_API_URL", "http://localhost:3000")
@@ -80,6 +85,7 @@ async def analyze_company_by_id(company_id):
     except Exception as outer_e:
         print(f"Outer error: {str(outer_e)}")
         import traceback
+
         print(traceback.format_exc())
 
 
@@ -90,7 +96,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     signal.signal(signal.SIGINT, handle_sigint)
-    
+
     if len(sys.argv) < 2:
         print("Usage: python analyze_by_id.py COMPANY_ID [--verbose]")
         sys.exit(1)

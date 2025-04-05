@@ -20,7 +20,7 @@ api_key = "sk-or-v1-573045c69b30de899594bf00f4b3e8ec5fd1023ab92aafbb12ba0b997b97
 #   - gpt-4o
 #   - gpt-4-turbo
 #   - qwen-32b
-default_model = "deepseek-chat"
+default_model = "claude-3-haiku"
 
 # Provider sorting strategy
 # Options: "pricing", "latency", "availability"
@@ -28,9 +28,9 @@ provider_sorting = "pricing"
 
 # Rate limiting settings
 [rate_limiting]
-initial_rate = 10    # Initial rate limit (requests per minute)
+initial_rate = 5     # Initial rate limit (requests per minute)
 backoff_factor = 0.5 # Factor to reduce rate by when errors occur
-max_retries = 5      # Maximum number of retries for a single request
+max_retries = 8      # Maximum number of retries for a single request
 
 # Fallback settings
 [fallbacks]

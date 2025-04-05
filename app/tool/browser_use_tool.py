@@ -38,7 +38,8 @@ Element Actions:
 - select_dropdown_option: Select dropdown
 
 Content Actions:
-- extract_content: Extract page info
+- extract_content: Extract page info with a specific goal
+- get_page_content: Get and analyze current page content
 
 Tab Actions:
 - switch_tab: Switch tab
@@ -74,6 +75,7 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                     "web_search",
                     "wait",
                     "extract_content",
+                    "get_page_content",
                     "switch_tab",
                     "open_tab",
                     "close_tab",
@@ -135,6 +137,7 @@ class BrowserUseTool(BaseTool, Generic[Context]):
             "web_search": ["query"],
             "wait": ["seconds"],
             "extract_content": ["goal"],
+            "get_page_content": [],
             "refresh": [],
         },
     }
@@ -164,6 +167,9 @@ class BrowserUseTool(BaseTool, Generic[Context]):
         """Ensure browser and context are initialized."""
         if self.browser is None:
             browser_config_kwargs = {"headless": False, "disable_security": True}
+            
+            # Log browser initialization
+            logger.info(f"Initializing browser with config: {browser_config_kwargs}")
 
             if config.browser_config:
                 from browser_use.browser.browser import ProxySettings
@@ -445,8 +451,11 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                             )
 
                 # Content extraction actions
-                elif action == "extract_content":
-                    if not goal:
+                elif action == "get_page_content" or action == "extract_content":
+                    # Use a default goal if this is get_page_content
+                    if action == "get_page_content":
+                        goal = "Extract and analyze the current page content"
+                    elif not goal:
                         return ToolResult(
                             error="Goal is required for 'extract_content' action"
                         )
@@ -473,135 +482,64 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                             content = "Could not extract page content."
 
                     # Get current page URL and title
-                    page_url = await page.url()
+                    page_url = page.url
                     page_title = await page.title()
+                    
+                    # Take a screenshot of the current page
+                    screenshot = await page.screenshot(full_page=True, type="jpeg", quality=90)
+                    screenshot_b64 = base64.b64encode(screenshot).decode("utf-8")
+                    
+                    # Prepare the content for analysis
+                    if len(content) > 15000:
+                        # Truncate very long content to avoid overwhelming the model
+                        logger.info(f"Content length {len(content)} exceeds limit, truncating to 15000 chars")
+                        content = content[:15000] + "\n\n[Content truncated due to length...]\n\n"
+                    
+                    # Prepare prompt for the vision model
+                    prompt = f"""Analyze this webpage screenshot and content. 
 
-                    # Extract website industry context if available in tool_context
-                    industry_context = ""
-                    if (
-                        self.tool_context
-                        and hasattr(self.tool_context, "industry")
-                        and self.tool_context.industry
-                    ):
-                        industry_context = f"This website is for a business in the {self.tool_context.industry} industry. "
+Goal: {goal}
 
-                    # Improved system message with more context and specific instructions for the extraction goal
-                    system_message = f"""
-You are a website analyzer specialized in extracting and evaluating content from web pages.
-Your task is to analyze the content of a web page and extract information based on the specified goal.
+Page Title: {page_title}
+URL: {page_url}
 
-{industry_context}
-Current page URL: {page_url}
-Current page title: {page_title}
+Provide a detailed analysis addressing the goal. Include:
+1. Overall assessment
+2. Main sections/features identified
+3. Content quality evaluation
+4. Design and usability evaluation
+5. Specific recommendations for improvement
 
-When extracting information, be thorough and detailed. Follow these guidelines:
-1. First, scan the entire page content to understand its structure and purpose
-2. Focus on finding information that matches the extraction goal
-3. When looking for page elements (like navigation, contact info, etc.), describe what you found with specifics
-4. Include exact text from the page when relevant, including important headings, links, and content
-5. If you don't find requested information, explain what you looked for and what's missing
-
-IMPORTANT: Format your response using XML tags to ensure proper parsing:
-<extract_content>
-<text>Your detailed extraction and analysis here...</text>
-</extract_content>
-"""
-
-                    # Customize the prompt based on extraction goal
-                    extraction_prompt = goal
-                    if "navigation" in goal.lower() or "menu" in goal.lower():
-                        extraction_prompt = (
-                            f"{goal} List all menu items with their text and links."
-                        )
-                    elif "seo" in goal.lower():
-                        extraction_prompt = f"{goal} Check for title tags, meta descriptions, headings structure, and image alt attributes."
-                    elif "mobile" in goal.lower():
-                        extraction_prompt = f"{goal} Look for viewport meta tags, responsive design elements, and mobile-friendly features."
-                    elif "contact" in goal.lower():
-                        extraction_prompt = f"{goal} Find phone numbers, email addresses, contact forms, physical addresses, and social media links."
-
-                    # Construct user message with extraction goal and page content
-                    # Ensure correct f-string formatting for multi-line string
-                    user_message = f"""Extract the following information from the current page: {extraction_prompt}
-
-Page content:
-{content[:max_content_length]}"""
-
-                    # Prepare messages for the LLM
-                    messages = [
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": user_message},
-                    ]
-
+Return your analysis as structured text."""
+                    
+                    logger.info(f"Sending page analysis to vision model: {page_url}")
+                    
                     try:
-                        # Use LLMIntegration for XML-formatted responses
-                        response = await self.llm_integration.ask_with_tools(
-                            messages=messages,
-                            temperature=0.1,  # Lower temperature for more deterministic extraction
-                            stream=False,  # No streaming for extraction tasks
+                        # Use the vision model to analyze the page
+                        vision_llm = LLM("vision")
+                        analysis_result = await vision_llm.ask_with_images(
+                            messages=[{"role": "user", "content": prompt}],
+                            images=[{"url": f"data:image/jpeg;base64,{screenshot_b64}"}],
+                            stream=False,
+                            temperature=0.2
                         )
-
-                        if not response:
-                            logger.warning("LLM returned None for extraction")
-                            return ToolResult(
-                                output=json.dumps(
-                                    {
-                                        "status": "error",
-                                        "message": "Failed to extract content: LLM returned no response.",
-                                        "extracted_content": {
-                                            "text": f"Could not extract information about: {goal}"
-                                        },
-                                    }
-                                )
-                            )
-
-                        # Get the full response text
-                        full_text = response.get("full_text", "") or response.get(
-                            "text", ""
-                        )
-
-                        # Look for extract_content tags in the response
-                        extract_match = re.search(
-                            r"<extract_content>\s*<text>(.*?)</text>\s*</extract_content>",
-                            full_text,
-                            re.DOTALL | re.IGNORECASE,
-                        )  # Added IGNORECASE
-
-                        if extract_match:
-                            extracted_text = extract_match.group(1).strip()
-                        else:
-                            # If no XML tags found, use the whole response text as a fallback
-                            logger.warning(
-                                f"Could not find <extract_content> tags in response: {full_text[:200]}..."
-                            )
-                            extracted_text = full_text.strip()
-                            if not extracted_text:
-                                extracted_text = "LLM response did not contain expected format or text."
-
+                        
                         # Return properly formatted output
                         return ToolResult(
                             output=json.dumps(
                                 {
                                     "status": "success",
                                     "goal": goal,
-                                    "extracted_content": {"text": extracted_text},
+                                    "extracted_content": {"text": analysis_result},
                                 }
-                            )
+                            ),
+                            base64_image=screenshot_b64
                         )
-
-                    except Exception as e:
-                        logger.error(f"Error extracting content via LLM: {str(e)}")
-                        # Return a default response with basic page info
+                    except Exception as analysis_error:
+                        logger.error(f"Error analyzing page with vision model: {analysis_error}")
                         return ToolResult(
-                            output=json.dumps(
-                                {
-                                    "status": "error",
-                                    "message": f"Error during LLM extraction: {str(e)}",
-                                    "extracted_content": {
-                                        "text": f"The page appears to be about {page_title}. It has a URL of {page_url}. Could not complete full extraction due to an error."
-                                    },
-                                }
-                            )
+                            error=f"Error analyzing page content: {str(analysis_error)}",
+                            base64_image=screenshot_b64
                         )
 
                 # Tab management actions
@@ -680,26 +618,114 @@ Page content:
             await page.bring_to_front()
             await page.wait_for_load_state(timeout=10000)  # Add timeout
 
+            # First take a clean screenshot
             screenshot = await page.screenshot(
                 full_page=True,
                 animations="disabled",
                 type="jpeg",
                 quality=85,  # Reduced quality slightly
             )
+            
+            # Add visual overlays to the screenshot to mark clickable elements
+            screenshot_with_markers = None
+            if state.element_tree and state.element_tree.clickable_elements:
+                try:
+                    # Use JavaScript to add visual markers to the page
+                    markers_script = """
+                    (function() {
+                        // Remove any existing markers first
+                        document.querySelectorAll('.openmanus-element-marker').forEach(e => e.remove());
+                        
+                        // Create markers for the specified elements
+                        const elements = arguments[0];
+                        elements.forEach((el, index) => {
+                            if (!el || !el.xpath) return;
+                            
+                            try {
+                                // Get the element using XPath
+                                const element = document.evaluate(
+                                    el.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+                                ).singleNodeValue;
+                                
+                                if (element) {
+                                    const rect = element.getBoundingClientRect();
+                                    const marker = document.createElement('div');
+                                    marker.className = 'openmanus-element-marker';
+                                    marker.textContent = '[' + index + ']';
+                                    marker.style.cssText = 'position: absolute; background-color: rgba(66, 135, 245, 0.8); color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-family: Arial; z-index: 10000; pointer-events: none; font-size: 14px;';
+                                    marker.style.left = (window.scrollX + rect.left) + 'px';
+                                    marker.style.top = (window.scrollY + rect.top) + 'px';
+                                    document.body.appendChild(marker);
+                                }
+                            } catch (e) {
+                                console.error('Error adding marker:', e);
+                            }
+                        });
+                        
+                        // Return true to confirm execution
+                        return true;
+                    })
+                    """
+                    
+                    # Convert clickable elements to a format that can be passed to JavaScript
+                    elements_for_js = []
+                    for i, element in enumerate(state.element_tree.clickable_elements):
+                        elements_for_js.append({
+                            "index": i,
+                            "xpath": element.xpath if hasattr(element, "xpath") else None,
+                            "role": element.role if hasattr(element, "role") else None
+                        })
+                    
+                    # Execute the script to add markers
+                    await page.evaluate(markers_script, elements_for_js)
+                    
+                    # Wait a brief moment for the markers to render
+                    await asyncio.sleep(0.5)
+                    
+                    # Take a new screenshot with the markers
+                    screenshot_with_markers = await page.screenshot(
+                        full_page=True,
+                        animations="disabled",
+                        type="jpeg",
+                        quality=85
+                    )
+                    
+                    # Clean up markers
+                    await page.evaluate("""
+                    document.querySelectorAll('.openmanus-element-marker').forEach(e => e.remove());
+                    """)
+                    
+                except Exception as marker_error:
+                    logger.error(f"Error adding element markers: {marker_error}")
+                    # Continue with the original screenshot if there's an error
 
-            screenshot = base64.b64encode(screenshot).decode("utf-8")
+            # Use the screenshot with markers if available, otherwise use the original
+            final_screenshot = screenshot_with_markers if screenshot_with_markers else screenshot
+            screenshot_b64 = base64.b64encode(final_screenshot).decode("utf-8")
 
             # Build the state info with all required fields
+            elements_list = []
+            if state.element_tree and state.element_tree.clickable_elements:
+                for i, element in enumerate(state.element_tree.clickable_elements):
+                    element_info = {
+                        "index": i,
+                        "text": element.text if hasattr(element, "text") else "",
+                        "type": element.role if hasattr(element, "role") else "element",
+                        "is_visible": element.visible if hasattr(element, "visible") else True
+                    }
+                    elements_list.append(element_info)
+
             state_info = {
                 "url": state.url,
                 "title": state.title,
                 "tabs": [tab.model_dump() for tab in state.tabs],
-                "help": "[0], [1], [2], etc., represent clickable indices corresponding to the elements listed. Clicking on these indices will navigate to or interact with the respective content behind them.",
+                "help": "The elements below are numbered with [0], [1], [2], etc. directly on the screenshot. Use these numbers with the click_element action to interact with them.",
                 "interactive_elements": (
                     state.element_tree.clickable_elements_to_string()
                     if state.element_tree
                     else ""
                 ),
+                "elements": elements_list,
                 "scroll_info": {
                     "pixels_above": getattr(state, "pixels_above", 0),
                     "pixels_below": getattr(state, "pixels_below", 0),
@@ -714,7 +740,7 @@ Page content:
                 output=json.dumps(
                     state_info, indent=2, ensure_ascii=False
                 ),  # Reduced indent
-                base64_image=screenshot,
+                base64_image=screenshot_b64,
             )
         except Exception as e:
             logger.exception("Failed to get browser state.")  # Log full traceback

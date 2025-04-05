@@ -108,11 +108,32 @@ def parse_assistant_message(content: str) -> Tuple[str, List[ToolCall]]:
     """
     Parse an assistant message to extract text content and tool calls.
     
+    This parser looks for XML-formatted tool calls and also recognizes natural 
+    language references to browser elements (like "click on element [3]").
+    
     Returns:
         Tuple of (text_content, tool_calls) where:
         - text_content is all non-tool text combined
         - tool_calls is a list of ToolCall objects
     """
+    # Special handling for implicit website analysis requests
+    if content and isinstance(content, str):
+        # If message contains browser navigation requests without properly formatted XML
+        if ('http' in content.lower() and 
+            ('analyze' in content.lower() or 'analyse' in content.lower()) and 
+            '<browser_use>' not in content):
+            # Look for URLs
+            import re
+            urls = re.findall(r'https?://[^\s]+', content)
+            if urls:
+                # Create an implicit tool call for the first URL
+                url = urls[0].rstrip(',.;:"\')') # Clean URL
+                return content, [ToolCall(
+                    name="browser_use",
+                    parameters={"action": "go_to_url", "url": url},
+                    partial=False
+                )]
+    
     parsed_segments = parse_tool_calls(content)
     
     # Collect all text segments
@@ -125,5 +146,33 @@ def parse_assistant_message(content: str) -> Tuple[str, List[ToolCall]]:
     partial_tool = parse_partial_tool_call(content)
     if partial_tool:
         tool_calls.append(partial_tool)
+    
+    # If we have text but no tool calls, check for natural language references to browser elements
+    if text_content and not tool_calls:
+        # Check for element click references like "click on element [3]"
+        click_pattern = r'click\s+(?:on|the)?\s*(?:element|button|link)?\s*\[(\d+)\]'
+        click_matches = re.findall(click_pattern, text_content, re.IGNORECASE)
+        if click_matches:
+            # Extract the first element index from the matches
+            element_index = int(click_matches[0])
+            tool_calls.append(ToolCall(
+                name="browser_use",
+                parameters={"action": "click_element", "index": element_index},
+                partial=False
+            ))
+        # If no element clicks, check for URLs
+        elif 'http' in text_content.lower():
+            import re
+            urls = re.findall(r'https?://[^\s]+', text_content)
+            if urls:
+                # Only add an implicit tool call if the response seems to be suggesting visiting a URL
+                navigate_indicators = ['visit', 'go to', 'navigate', 'open', 'check', 'look at']
+                if any(indicator in text_content.lower() for indicator in navigate_indicators):
+                    url = urls[0].rstrip(',.;:"\')') # Clean URL
+                    tool_calls.append(ToolCall(
+                        name="browser_use",
+                        parameters={"action": "go_to_url", "url": url},
+                        partial=False
+                    ))
     
     return text_content, tool_calls

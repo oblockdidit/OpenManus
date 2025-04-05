@@ -1,5 +1,10 @@
 import asyncio
 import time
+import os
+import tomllib
+import json
+import httpx
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 
 import openai
@@ -221,13 +226,42 @@ class OpenRouterClient:
 # Create a global client instance
 _client_instance = None
 
+def get_openrouter_api_key():
+    """Read the OpenRouter API key directly from the TOML file."""
+    try:
+        project_root = Path(__file__).resolve().parent.parent.parent
+        config_file = project_root / "config" / "openrouter.toml"
+        
+        if not config_file.exists():
+            raise FileNotFoundError(f"OpenRouter config file not found at {config_file}")
+        
+        with open(config_file, "rb") as f:
+            config = tomllib.load(f)
+        
+        api_key = config.get("api_key")
+        if not api_key:
+            raise ValueError("API key not found in OpenRouter configuration")
+        return api_key
+    except Exception as e:
+        raise ValueError(f"Error getting OpenRouter API key: {str(e)}")
+
 def get_openrouter_client(api_key: Optional[str] = None) -> OpenRouterClient:
     """Get or create the OpenRouter client instance."""
     global _client_instance
     if _client_instance is None:
         if api_key is None:
-            from app.config import config
-            api_key = config.llm.get("openrouter", {}).get("api_key", None)
+            try:
+                # First try to get from app config
+                from app.config import config
+                api_key = config.llm.get("openrouter", {}).get("api_key", None)
+                
+                # If not found in config, read directly from TOML file
+                if not api_key:
+                    api_key = get_openrouter_api_key()
+                    logger.info("Using API key from openrouter.toml file")
+            except Exception as e:
+                raise ValueError(f"OpenRouter API key not found: {str(e)}")
+            
             if not api_key:
                 raise ValueError("OpenRouter API key not found in configuration")
         _client_instance = OpenRouterClient(api_key=api_key)
@@ -262,14 +296,23 @@ async def generate_openrouter_response(
     
     # Try primary model
     try:
-        return await client.generate_completion(
+        # Configure the actual stream parameter based on recent OpenRouter API behavior
+        # Even if stream=True was requested, sometimes it's better to use non-streaming
+        # for some models due to API changes
+        actual_stream = stream
+        
+        response = await client.generate_completion(
             messages=messages,
             model_id=full_model_id,
             temperature=temperature,
             max_tokens=max_tokens,
-            stream=stream,
+            stream=actual_stream,
             top_p=top_p
         )
+        
+        logger.info(f"OpenRouter returned response type: {type(response).__name__}")
+        return response
+        
     except ValueError as e:
         # If fallbacks are disabled or it's not an endpoint error, just raise
         if not fallback_enabled or not str(e).startswith("Model") or "support" not in str(e).lower():
@@ -284,7 +327,7 @@ async def generate_openrouter_response(
         for fallback_id in fallbacks:
             try:
                 logger.info(f"Trying fallback model: {fallback_id}")
-                return await client.generate_completion(
+                response = await client.generate_completion(
                     messages=messages,
                     model_id=fallback_id,
                     temperature=temperature,
@@ -292,6 +335,8 @@ async def generate_openrouter_response(
                     stream=stream,
                     top_p=top_p
                 )
+                logger.info(f"Fallback model {fallback_id} returned response type: {type(response).__name__}")
+                return response
             except Exception as fallback_error:
                 logger.warning(f"Fallback model {fallback_id} failed: {fallback_error}")
                 last_error = fallback_error
@@ -319,3 +364,86 @@ async def get_openrouter_model_list() -> List[Dict[str, Any]]:
             {"id": model_id, "name": name} 
             for name, model_id in OPENROUTER_MODELS.items()
         ]
+
+
+# Simple function without all the client complexity
+async def generate_openrouter_quick_response(messages, model_id=None, temperature=0.7, max_tokens=4096, stream=False):
+    """
+    Generate a response from OpenRouter API with timeouts and fallbacks for browser navigation.
+    """
+    try:
+        # Get API key and base URL from config
+        api_key = config.llm.get("openrouter", {}).get("api_key", None) or os.environ.get("OPENROUTER_API_KEY")
+        base_url = config.llm.get("openrouter", {}).get("base_url", "https://openrouter.ai/api/v1")
+        
+        if not api_key:
+            raise ValueError("OpenRouter API key not found in config or environment variables")
+        
+        # Use model_id if provided, otherwise use default from config
+        if not model_id:
+            model_id = config.llm.get("openrouter", {}).get("default_model", "google/gemini-pro")
+            
+        # Create OpenAI client with OpenRouter base URL
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        
+        # Add a timeout for the OpenRouter call
+        timeout = httpx.Timeout(30.0, connect=10.0)  # 30 seconds total, 10 seconds connect
+        client.timeout = timeout
+        
+        # Set up the parameters dict
+        params = {
+            "model": model_id,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": stream
+        }
+        
+        # Log the request without the full message content
+        log_params = params.copy()
+        log_params["messages"] = f"[{len(messages)} messages]"
+        logger.info(f"Quick OpenRouter completion with: {json.dumps(log_params)}")
+        
+        # Make the request with a timeout
+        try:
+            response = await asyncio.wait_for(
+                client.chat.completions.create(**params),
+                timeout=20  # 20 second timeout for the API call
+            )
+            return response
+        except asyncio.TimeoutError:
+            logger.error(f"OpenRouter request to {model_id} timed out after 20 seconds")
+            # Create a simple dict response instead of using the types
+            return {
+                "id": "error-timeout",
+                "choices": [{
+                    "finish_reason": "timeout",
+                    "index": 0,
+                    "message": {
+                        "content": "I'm experiencing connectivity issues with the language model service. Let me help you directly if you'd like to browse a website or run a command.",
+                        "role": "assistant"
+                    }
+                }],
+                "created": int(time.time()),
+                "model": model_id,
+                "object": "chat.completion",
+                "usage": {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}
+            }
+    except Exception as e:
+        logger.error(f"Error generating OpenRouter response: {str(e)}")
+        # Create a simple dict response instead of using the types
+        return {
+            "id": "error",
+            "choices": [{
+                "finish_reason": "error",
+                "index": 0,
+                "message": {
+                    "content": f"I encountered an error trying to process your request. If you're looking to visit a website, please provide the URL and I'll navigate there directly.",
+                    "role": "assistant"
+                }
+            }],
+            "created": int(time.time()),
+            "model": model_id,
+            "object": "chat.completion",
+            "usage": {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}
+        }

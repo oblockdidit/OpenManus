@@ -37,10 +37,15 @@ class BaseAgent(BaseModel, ABC):
     )
 
     # Execution control
-    max_steps: int = Field(default=10, description="Maximum steps before termination")
+    max_steps: int = Field(default=20, description="Maximum steps before termination")
     current_step: int = Field(default=0, description="Current step in execution")
 
+    # Loop detection settings
     duplicate_threshold: int = 2
+    empty_response_threshold: int = 3
+    consecutive_empty_responses: int = 0
+    consecutive_timeouts: int = 0
+    timeout_threshold: int = 2
 
     class Config:
         arbitrary_types_allowed = True
@@ -161,35 +166,86 @@ class BaseAgent(BaseModel, ABC):
         """
 
     def handle_stuck_state(self):
-        """Handle stuck state by adding a prompt to change strategy"""
+        """Handle stuck state by adding a prompt to change strategy
+        and implementing recovery actions based on detected issues"""
         # First reset any previous prompt additions
         if hasattr(self, 'next_step_prompt') and self.next_step_prompt:
             original_prompt = getattr(self.__class__, 'next_step_prompt', "")
             self.next_step_prompt = original_prompt
         
-        # Now add the stuck state prompt
-        stuck_prompt = "\
-        Observed duplicate responses. Consider new strategies and avoid repeating ineffective paths already attempted."
+        # Determine type of stuck state and add appropriate prompt
+        stuck_prompt = ""
+        if self.consecutive_empty_responses >= self.empty_response_threshold:
+            stuck_prompt = "\
+            Detected multiple empty responses. Please provide a simple analysis of what you can observe \
+            from the available data. Focus on basic facts rather than complex analysis."
+            # Reset counter after handling
+            self.consecutive_empty_responses = 0
+        elif self.consecutive_timeouts >= self.timeout_threshold:
+            stuck_prompt = "\
+            Detected multiple timeout errors. Please process the available information in smaller chunks \
+            rather than attempting a comprehensive analysis at once."
+            # Reset counter after handling
+            self.consecutive_timeouts = 0
+        else:
+            stuck_prompt = "\
+            Observed duplicate responses. Consider new strategies and avoid repeating ineffective paths already attempted."
+            
+        # Add the prompt
         self.next_step_prompt = f"{stuck_prompt}\n{self.next_step_prompt}"
         logger.warning(f"Agent detected stuck state. Added prompt: {stuck_prompt}")
+        
+        # Add a system message to provide more context
+        if hasattr(self, 'memory') and self.memory:
+            self.memory.add_message(Message.system_message(
+                "The agent detected a potential loop or issue. Changing approach to simpler, more direct analysis."
+            ))
+            
+            # If we have multiple timeouts/empty responses, try to simplify the analysis
+            if self.consecutive_timeouts > 0 or self.consecutive_empty_responses > 0:
+                # Add a more direct instruction
+                self.memory.add_message(Message.system_message(
+                    "Please provide a simple, concise analysis based on available information without further tool calls."
+                ))
 
     def is_stuck(self) -> bool:
-        """Check if the agent is stuck in a loop by detecting duplicate content"""
+        """Check if the agent is stuck in a loop by detecting duplicate content,
+        multiple empty responses, or consecutive timeouts"""
+        # Not enough messages to be stuck
         if len(self.memory.messages) < 2:
             return False
 
         last_message = self.memory.messages[-1]
-        if not last_message.content:
-            return False
+        
+        # Check for empty responses
+        if last_message.role == "assistant" and (not last_message.content or last_message.content.strip() == ""):
+            self.consecutive_empty_responses += 1
+            logger.warning(f"Detected empty response ({self.consecutive_empty_responses}/{self.empty_response_threshold})")
+            if self.consecutive_empty_responses >= self.empty_response_threshold:
+                return True
+        else:
+            self.consecutive_empty_responses = 0
+        
+        # Check for timeout indicators
+        if last_message.role == "system" and "timeout" in last_message.content.lower():
+            self.consecutive_timeouts += 1
+            logger.warning(f"Detected timeout ({self.consecutive_timeouts}/{self.timeout_threshold})")
+            if self.consecutive_timeouts >= self.timeout_threshold:
+                return True
+        else:
+            self.consecutive_timeouts = 0
 
-        # Count identical content occurrences
-        duplicate_count = sum(
-            1
-            for msg in reversed(self.memory.messages[:-1])
-            if msg.role == "assistant" and msg.content == last_message.content
-        )
+        # Count identical content occurrences (traditional loop detection)
+        if last_message.content:
+            duplicate_count = sum(
+                1
+                for msg in reversed(self.memory.messages[:-1])
+                if msg.role == "assistant" and msg.content == last_message.content
+            )
+            if duplicate_count >= self.duplicate_threshold:
+                return True
 
-        return duplicate_count >= self.duplicate_threshold
+        return False
 
     @property
     def messages(self) -> List[Message]:
