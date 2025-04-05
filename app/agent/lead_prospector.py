@@ -15,7 +15,7 @@ from app.prompt.webdev_prompt import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.schema import AgentState, Message
 from app.tool import Terminate, ToolCollection
 from app.tool.tool_collection import ToolCollection
-from app.tool.webdev.navbar_website_analyzer import NavbarWebsiteAnalyzer
+from app.tool.webdev.ux_website_analyzer import UXWebsiteAnalyzer
 
 
 class LeadProspectorAgent(Manus):
@@ -40,7 +40,7 @@ class LeadProspectorAgent(Manus):
 
     # Configure specialized tools
     available_tools: ToolCollection = Field(
-        default_factory=lambda: ToolCollection(NavbarWebsiteAnalyzer(), Terminate())
+        default_factory=lambda: ToolCollection(UXWebsiteAnalyzer(), Terminate())
     )
 
     # CRM connector reference
@@ -134,27 +134,44 @@ class LeadProspectorAgent(Manus):
             return {"status": "error", "message": "CRM connector not initialized"}
 
         try:
-            company_id = company_data.get("id")
-            company_name = company_data.get("name", "")
+            # Handle different response structures
+            if "data" in company_data and "company" in company_data["data"]:
+                # This is the structure from the REST API
+                actual_company = company_data["data"]["company"]
+                company_id = actual_company.get("id")
+                company_name = actual_company.get("name", "")
 
-            # Extract domain name based on the Twenty CRM schema structure
-            domain_name_obj = company_data.get("domainName", {})
-            if isinstance(domain_name_obj, dict):
-                # Handle the complex domainName object structure
-                domain_name = domain_name_obj.get("primaryLinkUrl", "")
+                # Extract domain name
+                domain_name_obj = actual_company.get("domainName", {})
+                if isinstance(domain_name_obj, dict):
+                    domain_name = domain_name_obj.get("primaryLinkUrl", "")
+                else:
+                    domain_name = domain_name_obj or ""
+
+                industry = actual_company.get("industry", "Unknown")
             else:
-                # Handle case where it might be a string (for backward compatibility)
-                domain_name = domain_name_obj or ""
+                # This is the direct structure (legacy)
+                company_id = company_data.get("id")
+                company_name = company_data.get("name", "")
 
-            # Get industry directly
-            industry = company_data.get("industry", "Unknown")
+                # Extract domain name based on the Twenty CRM schema structure
+                domain_name_obj = company_data.get("domainName", {})
+                if isinstance(domain_name_obj, dict):
+                    # Handle the complex domainName object structure
+                    domain_name = domain_name_obj.get("primaryLinkUrl", "")
+                else:
+                    # Handle case where it might be a string (for backward compatibility)
+                    domain_name = domain_name_obj or ""
+
+                # Get industry directly
+                industry = company_data.get("industry", "Unknown")
 
             logger.info(
                 f"Analyzing {company_name} with domain {domain_name} in the {industry} industry"
             )
 
-            # Explicitly analyze the website first using the NavbarWebsiteAnalyzer tool
-            website_analyzer = NavbarWebsiteAnalyzer()
+            # Explicitly analyze the website first using the UXWebsiteAnalyzer tool
+            website_analyzer = UXWebsiteAnalyzer()
             logger.info(f"Explicitly analyzing website: {domain_name}")
 
             try:
@@ -162,7 +179,6 @@ class LeadProspectorAgent(Manus):
                 website_results = await website_analyzer.execute(
                     url=f"https://{domain_name}",
                     company_name=company_name,
-                    depth=3,
                     max_pages=5,
                     save_screenshots=True,
                 )
@@ -418,6 +434,14 @@ class LeadProspectorAgent(Manus):
                 if website_data.get("screenshots"):
                     web_analysis += f"\nScreenshots: {len(website_data.get('screenshots', []))} captured\n"
 
+                # Add page analysis files if available
+                if website_data.get("page_analysis_files"):
+                    web_analysis += f"\nDetailed UX/UI Analysis Files:\n"
+                    for i, analysis_file in enumerate(
+                        website_data.get("page_analysis_files", []), 1
+                    ):
+                        web_analysis += f"{i}. {analysis_file}\n"
+
                 # Add SEO issues summary if available
                 seo_issues = website_data.get("details", {}).get("seo_issues", {})
                 if seo_issues and seo_issues.get("top_issues"):
@@ -582,6 +606,22 @@ class LeadProspectorAgent(Manus):
                                     for item in tool_data["improvement_opportunities"]
                                 ]
                             )
+
+                        # Extract page analysis files
+                        if "page_analysis_files" in tool_data:
+                            analysis_data["page_analysis_files"] = tool_data[
+                                "page_analysis_files"
+                            ]
+
+                        # Extract screenshots
+                        if "screenshots" in tool_data:
+                            analysis_data["screenshots"] = tool_data["screenshots"]
+
+                        # Extract pages analyzed
+                        if "pages_analyzed" in tool_data:
+                            analysis_data["pages_analyzed"] = tool_data[
+                                "pages_analyzed"
+                            ]
 
                         # Log the successful extraction
                         logger.info(f"Successfully extracted tool data: {tool_data}")

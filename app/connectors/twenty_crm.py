@@ -139,49 +139,48 @@ class TwentyCRMConnector:
             "first": limit,
             "after": cursor,
             "filter": filters or {},
-            "orderBy": [{"createdAt": "Desc"}],  # Changed to proper case - Desc not DESC
+            "orderBy": [
+                {"createdAt": "Desc"}
+            ],  # Changed to proper case - Desc not DESC
         }
 
         return await self.execute_query(query, variables)
 
     async def get_company(self, company_id: str) -> Dict[str, Any]:
         """
-        Get a specific company by ID.
+        Get a specific company by ID using the REST API.
 
         Args:
             company_id: The ID of the company to fetch
 
         Returns:
-            The company data
+            The company data formatted to match the expected structure
         """
-        query = """
-        query GetCompany($id: ID!) {
-          company(id: $id) {
-            id
-            name
-            domainName {
-              primaryLinkUrl
-              primaryLinkLabel
-            }
-            address {
-              addressStreet1
-              addressStreet2
-              addressCity
-              addressState
-              addressPostcode
-              addressCountry
-            }
-            industry
-            websiteStatus
-            lastProspected
-            proposedSolution
-          }
-        }
-        """
+        try:
+            url = f"{self.api_url}/rest/companies/{company_id}"
 
-        variables = {"id": company_id}
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    url,
+                    headers=self.headers,
+                    timeout=30.0,
+                )
 
-        return await self.execute_query(query, variables)
+                if response.status_code != 200:
+                    error_message = f"REST API request failed with status {response.status_code}: {response.text}"
+                    print(f"Error: {error_message}")
+                    raise Exception(error_message)
+
+                result = response.json()
+
+                # Return the raw result without wrapping it
+                # The analyze_by_id.py script will handle the structure
+                return result
+
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+            raise Exception(f"Connection error: {str(e)}")
+        except Exception as e:
+            raise Exception(f"Error fetching company: {str(e)}")
 
     async def create_company(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -261,7 +260,7 @@ class TwentyCRMConnector:
         variables = {"id": company_id, "data": data}
 
         return await self.execute_query(query, variables)
-        
+
     async def update_company_rest(
         self, company_id: str, data: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -277,18 +276,23 @@ class TwentyCRMConnector:
         """
         try:
             url = f"{self.api_url}/rest/companies/{company_id}"
-            
+
             # Ensure proper fields are present
             update_data = {}
-            
+
             # Only include fields that are being updated
             for key, value in data.items():
-                if key in ["websiteStatus", "lastProspected", "proposedSolution", "websiteAnalysis"]:
+                if key in [
+                    "websiteStatus",
+                    "lastProspected",
+                    "proposedSolution",
+                    "websiteAnalysis",
+                ]:
                     update_data[key] = value
-            
+
             if not update_data:
                 return {"message": "No fields to update"}
-            
+
             async with httpx.AsyncClient() as client:
                 response = await client.patch(
                     url,
@@ -296,22 +300,20 @@ class TwentyCRMConnector:
                     json=update_data,
                     timeout=30.0,
                 )
-                
+
                 if response.status_code not in [200, 201, 202]:
                     error_message = f"REST API request failed with status {response.status_code}: {response.text}"
                     print(f"Error: {error_message}")
                     raise Exception(error_message)
-                
+
                 result = response.json()
                 return result
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
             raise Exception(f"Connection error: {str(e)}")
         except Exception as e:
             raise Exception(f"Error updating company via REST: {str(e)}")
-    
-    async def create_note(
-        self, note_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+
+    async def create_note(self, note_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Create a note in Twenty CRM using GraphQL and link it to a company.
 
@@ -322,8 +324,10 @@ class TwentyCRMConnector:
             The created note data
         """
         # Extract company ID but don't include it in note creation
-        company_id = note_data.pop("companyId", None) if "companyId" in note_data else None
-        
+        company_id = (
+            note_data.pop("companyId", None) if "companyId" in note_data else None
+        )
+
         # Step 1: Create the note
         create_note_query = """
         mutation CreateNote($data: NoteCreateInput!) {
@@ -341,30 +345,27 @@ class TwentyCRMConnector:
 
         # Print note data for debugging
         print(f"GraphQL note data: {note_data}")
-        
+
         variables = {
             "data": {
                 "position": note_data.get("position", 1),
                 "title": note_data.get("title", ""),
-                "bodyV2": {
-                    "blocknote": "",
-                    "markdown": ""
-                },
-                "webAnalysis": note_data.get("webAnalysis", "")
+                "bodyV2": {"blocknote": "", "markdown": ""},
+                "webAnalysis": note_data.get("webAnalysis", ""),
             }
         }
-        
+
         # Print variables for debugging
         print(f"GraphQL variables: {variables}")
 
         result = await self.execute_query(create_note_query, variables)
-        
+
         # Extract note ID from response
         note_id = result.get("data", {}).get("createNote", {}).get("id")
-        
+
         if not note_id:
             raise Exception("Failed to get note ID from GraphQL response")
-        
+
         # Step 2: Create note target relationship if company ID was provided
         if company_id:
             create_target_query = """
@@ -380,21 +381,14 @@ class TwentyCRMConnector:
               }
             }
             """
-            
-            target_variables = {
-                "data": {
-                    "noteId": note_id,
-                    "companyId": company_id
-                }
-            }
-            
+
+            target_variables = {"data": {"noteId": note_id, "companyId": company_id}}
+
             await self.execute_query(create_target_query, target_variables)
-        
+
         return result
-    
-    async def create_note_rest(
-        self, note_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+
+    async def create_note_rest(self, note_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Create a note in Twenty CRM using the REST API and link it to a company.
 
@@ -407,30 +401,27 @@ class TwentyCRMConnector:
         try:
             # Step 1: Create the note first
             url = f"{self.api_url}/rest/notes"
-            
+
             # Extract company ID but don't include it in the note creation payload
-            company_id = note_data.pop("companyId", None) if "companyId" in note_data else None
-            
+            company_id = (
+                note_data.pop("companyId", None) if "companyId" in note_data else None
+            )
+
             # Debug print to log the note_data and see what's arriving
             print(f"Creating note with data: {note_data}")
-            
+
             # Prepare the note data following the API schema
             rest_note_data = {
                 "position": note_data.get("position", 1),
                 "title": note_data.get("title", ""),
-                "bodyV2": {
-                    "blocknote": "",
-                    "markdown": ""
-                },
+                "bodyV2": {"blocknote": "", "markdown": ""},
                 "webAnalysis": note_data.get("webAnalysis", ""),  # Use the new field
-                "createdBy": {
-                    "source": "EMAIL"
-                }
+                "createdBy": {"source": "EMAIL"},
             }
-            
+
             # Debug the composed data
             print(f"Sending to API: {rest_note_data}")
-            
+
             async with httpx.AsyncClient() as client:
                 # Create the note
                 response = await client.post(
@@ -439,39 +430,38 @@ class TwentyCRMConnector:
                     json=rest_note_data,
                     timeout=30.0,
                 )
-                
+
                 if response.status_code not in [200, 201, 202]:
                     error_message = f"REST API request failed with status {response.status_code}: {response.text}"
                     print(f"Error: {error_message}")
                     raise Exception(error_message)
-                
+
                 # Extract the created note ID
                 note_result = response.json()
                 # Debug the response
                 print(f"Note creation response: {note_result}")
-                
+
                 # The response format might be different than expected, try different paths
                 note_id = None
                 if "data" in note_result and "createNote" in note_result["data"]:
                     note_id = note_result["data"]["createNote"].get("id")
                 elif "id" in note_result:
                     note_id = note_result["id"]
-                
+
                 if not note_id:
-                    print(f"Warning: Could not extract note ID from response. Response: {note_result}")
+                    print(
+                        f"Warning: Could not extract note ID from response. Response: {note_result}"
+                    )
                     # If we can't get the ID, still return the result but don't try to create the noteTarget
                     return note_result
-                
+
                 # Step 2: If we have a company ID, create the note-company relationship
                 if company_id:
                     target_url = f"{self.api_url}/rest/noteTargets"
-                    
+
                     # Create payload for noteTarget following the API schema
-                    note_target_data = {
-                        "noteId": note_id,
-                        "companyId": company_id
-                    }
-                    
+                    note_target_data = {"noteId": note_id, "companyId": company_id}
+
                     # Create the relationship
                     target_response = await client.post(
                         target_url,
@@ -479,12 +469,14 @@ class TwentyCRMConnector:
                         json=note_target_data,
                         timeout=30.0,
                     )
-                    
+
                     if target_response.status_code not in [200, 201, 202]:
-                        print(f"Warning: Created note but failed to link to company: {target_response.text}")
-                
+                        print(
+                            f"Warning: Created note but failed to link to company: {target_response.text}"
+                        )
+
                 return note_result
-                
+
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
             raise Exception(f"Connection error: {str(e)}")
         except Exception as e:

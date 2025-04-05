@@ -2,24 +2,17 @@
 """Script to analyze a company directly by ID through direct website analysis using navbar exploration."""
 
 import asyncio
-import base64
 import json
 import os
 import signal
-import subprocess
 import sys
-import time
 from datetime import datetime
-from pathlib import Path
 
 # Add the current directory to the path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.agent.lead_prospector import LeadProspectorAgent
 from app.connectors.twenty_crm import TwentyCRMConnector
-from app.llm.llm import LLM
-from app.logger import logger
-from app.tool.browser_use_tool import BrowserUseTool
 
 
 async def analyze_company_by_id(company_id):
@@ -39,20 +32,67 @@ async def analyze_company_by_id(company_id):
 
         crm_connector = TwentyCRMConnector(api_url, api_key)
 
-        # For now, let's use hardcoded data since we know it from the screenshot
-        print(f"Using known data for company ID: {company_id}")
-        domain_name = "occasionhirenottingham.co.uk"
-        company_data = {
-            "id": company_id,
-            "name": "Occasion Hire Nottingham",
-            "domainName": {"primaryLinkUrl": domain_name},
-            "industry": "Event Services",
-        }
+        # Fetch company data from Twenty CRM API
+        print(f"Fetching data for company ID: {company_id}")
+        response = await crm_connector.get_company(company_id)
+
+        # Check if the company was found
+        if (
+            not response
+            or "data" not in response
+            or "company" not in response["data"]
+            or not response["data"]["company"]
+        ):
+            print(f"Error: Company with ID {company_id} not found")
+            return
+
+        # Extract company data
+        company_data = response
+
+        # Get domain name
+        domain_name = None
+
+        # Print the company data for debugging
+        print(f"Company data: {json.dumps(company_data, indent=2)}")
+
+        # Extract the actual company data from the nested structure
+        if "data" in company_data and "company" in company_data["data"]:
+            actual_company_data = company_data["data"]["company"]
+
+            # Get the company name for better error messages
+            company_name = actual_company_data.get("name", "Unknown")
+
+            # Extract domain name
+            if actual_company_data.get("domainName") and actual_company_data[
+                "domainName"
+            ].get("primaryLinkUrl"):
+                domain_name = actual_company_data["domainName"]["primaryLinkUrl"]
+        else:
+            print(
+                f"Error: Unexpected response structure: {json.dumps(company_data, indent=2)}"
+            )
+            return
+
+        if not domain_name:
+            print(f"Error: No domain name found for company {company_name}")
+            return
+
         print(f"Analyzing website: {domain_name}")
 
         try:
             # Initialize the Lead Prospector agent
             lead_prospector = LeadProspectorAgent(crm_connector=crm_connector)
+
+            # Update company_data with the domain name to ensure it's used correctly
+            if "data" in company_data and "company" in company_data["data"]:
+                # Make sure the domain name is properly set in the company data
+                company_data["data"]["company"]["domainName"][
+                    "primaryLinkUrl"
+                ] = domain_name
+
+                # Also set the name for better logging
+                company_name = company_data["data"]["company"].get("name", "Unknown")
+                print(f"Analyzing company: {company_name} with domain: {domain_name}")
 
             # Process the company using the agent
             start_time = datetime.now()
@@ -91,7 +131,7 @@ async def analyze_company_by_id(company_id):
 
 if __name__ == "__main__":
     # Set up graceful termination
-    def handle_sigint(sig, frame):
+    def handle_sigint(*_):
         print("\nReceived interrupt signal. Shutting down...")
         sys.exit(0)
 
